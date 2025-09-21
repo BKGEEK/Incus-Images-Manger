@@ -420,7 +420,7 @@ function_batch_install() {
 show_menu() {
     clear
     green "=========================================="
-    green "           Incus 镜像自动管理工具"
+    green "    Incus 镜像自动管理工具 by Mike Leone"
     green "=========================================="
     echo ""
     green "系统架构: $(detect_arch)"

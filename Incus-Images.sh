@@ -1,5 +1,5 @@
 #!/bin/bash
-# 交互式镜像管理脚本
+# 交互式镜像管理脚本 - 自动下载安装版
 # 从 buildct.sh 中提取的镜像相关功能
 
 red() { echo -e "\033[31m\033[01m$@\033[0m"; }
@@ -88,12 +88,14 @@ import_image() {
     green "镜像URL: $image_url"
     
     # 下载镜像文件
+    yellow "下载镜像中..."
     if ! retry_wget "${cdn_success_url}${image_url}" "$image_name"; then
         red "镜像下载失败: $image_name"
         return 1
     fi
     
     # 解压和处理镜像
+    yellow "解压镜像中..."
     chmod 777 "$image_name"
     if ! unzip "$image_name"; then
         red "镜像解压失败: $image_name"
@@ -104,12 +106,13 @@ import_image() {
     rm -rf "$image_name"
     
     # 导入到 Incus
+    yellow "导入到 Incus 中..."
     if incus image import incus.tar.xz rootfs.squashfs --alias "$image_name"; then
-        green "镜像导入成功: $image_name"
+        green "✅ 镜像导入成功: $image_name"
         rm -rf incus.tar.xz rootfs.squashfs
         return 0
     else
-        red "镜像导入失败: $image_name"
+        red "❌ 镜像导入失败: $image_name"
         rm -rf incus.tar.xz rootfs.squashfs
         return 1
     fi
@@ -175,6 +178,70 @@ check_standard_images() {
     return 1
 }
 
+# 自动下载并安装镜像
+auto_download_install() {
+    local system="$1"
+    local cdn_success_url="$2"
+    
+    local sys_bit=$(detect_arch)
+    green "正在搜索系统镜像: $system (架构: $sys_bit)"
+    
+    # 首先检查自定义镜像
+    yellow "检查自定义镜像..."
+    local custom_image_url=$(check_custom_images "$system" "$sys_bit" "$cdn_success_url")
+    
+    if [ -n "$custom_image_url" ]; then
+        green "✅ 找到自定义镜像!"
+        local image_name=$(basename "$custom_image_url")
+        
+        # 检查镜像是否已存在
+        if incus image alias list | grep -q "$image_name"; then
+            green "✅ 镜像已存在: $image_name"
+            return 0
+        fi
+        
+        # 下载并安装自定义镜像
+        green "开始下载安装自定义镜像..."
+        if import_image "$image_name" "$custom_image_url" "$cdn_success_url"; then
+            green "✅ 自定义镜像安装完成: $image_name"
+            return 0
+        else
+            red "❌ 自定义镜像安装失败，尝试标准镜像..."
+        fi
+    fi
+    
+    # 检查标准镜像库
+    yellow "检查标准镜像库..."
+    local standard_image=$(check_standard_images "$system" "$sys_bit")
+    
+    if [ -n "$standard_image" ]; then
+        green "✅ 找到标准镜像: $standard_image"
+        
+        # 从镜像源获取镜像名称
+        local image_source="${standard_image%%:*}"
+        local image_alias="${standard_image#*:}"
+        
+        # 检查镜像是否已存在
+        if incus image alias list | grep -q "$image_alias"; then
+            green "✅ 镜像已存在: $image_alias"
+            return 0
+        fi
+        
+        # 下载标准镜像
+        yellow "开始下载标准镜像..."
+        if incus image copy "$standard_image" local: --alias "$image_alias" --auto-update; then
+            green "✅ 标准镜像下载完成: $image_alias"
+            return 0
+        else
+            red "❌ 标准镜像下载失败"
+            return 1
+        fi
+    fi
+    
+    red "❌ 未找到匹配的镜像: $system"
+    return 1
+}
+
 # 列出可用镜像
 list_available_images() {
     local sys_bit=$(detect_arch)
@@ -208,41 +275,47 @@ list_available_images() {
 remove_image() {
     local image_name="$1"
     if incus image delete "$image_name"; then
-        green "镜像删除成功: $image_name"
+        green "✅ 镜像删除成功: $image_name"
         return 0
     else
-        red "镜像删除失败: $image_name"
+        red "❌ 镜像删除失败: $image_name"
         return 1
     fi
 }
 
-# 检查系统镜像可用性
-check_system_image() {
-    local system="$1"
-    local cdn_success_url="$2"
+# 功能1: 搜索并自动安装镜像
+function_auto_install() {
+    clear
+    green "=========================================="
+    green "           搜索并自动安装镜像"
+    green "=========================================="
+    echo ""
     
-    local sys_bit=$(detect_arch)
-    green "检查系统镜像: $system (架构: $sys_bit)"
+    reading "请输入要安装的系统名称 (如: debian11, ubuntu20, centos7): " system_name
     
-    # 检查自定义镜像
-    local custom_image_url=$(check_custom_images "$system" "$sys_bit" "$cdn_success_url")
-    if [ -n "$custom_image_url" ]; then
-        green "✅ 找到自定义镜像: $(basename "$custom_image_url")"
-        return 0
+    if [ -z "$system_name" ]; then
+        red "系统名称不能为空!"
+        sleep 2
+        return
     fi
     
-    # 检查标准镜像
-    local standard_image=$(check_standard_images "$system" "$sys_bit")
-    if [ -n "$standard_image" ]; then
-        green "✅ 找到标准镜像: $standard_image"
-        return 0
+    check_cdn_file
+    echo ""
+    green "开始自动搜索和安装镜像..."
+    echo ""
+    
+    if auto_download_install "$system_name" "$cdn_success_url"; then
+        green "🎉 镜像安装成功!"
+    else
+        red "❌ 镜像安装失败!"
     fi
     
-    red "❌ 未找到匹配的镜像: $system"
-    return 1
+    echo ""
+    yellow "按回车键返回主菜单..."
+    read -n 1
 }
 
-# 功能1: 列出可用镜像
+# 功能2: 列出可用镜像
 function_list_images() {
     clear
     green "=========================================="
@@ -257,60 +330,7 @@ function_list_images() {
     read -n 1
 }
 
-# 功能2: 检查系统镜像
-function_check_image() {
-    clear
-    green "=========================================="
-    green "           检查系统镜像可用性"
-    green "=========================================="
-    echo ""
-    
-    reading "请输入要检查的系统名称 (如: debian11, ubuntu20): " system_name
-    
-    if [ -z "$system_name" ]; then
-        red "系统名称不能为空!"
-        sleep 2
-        return
-    fi
-    
-    check_cdn_file
-    check_system_image "$system_name" "$cdn_success_url"
-    
-    echo ""
-    yellow "按回车键返回主菜单..."
-    read -n 1
-}
-
-# 功能3: 导入自定义镜像
-function_import_image() {
-    clear
-    green "=========================================="
-    green "           导入自定义镜像"
-    green "=========================================="
-    echo ""
-    
-    reading "请输入镜像名称 (用于本地标识): " image_name
-    reading "请输入镜像下载URL: " image_url
-    
-    if [ -z "$image_name" ] || [ -z "$image_url" ]; then
-        red "镜像名称和URL不能为空!"
-        sleep 2
-        return
-    fi
-    
-    check_cdn_file
-    if import_image "$image_name" "$image_url" "$cdn_success_url"; then
-        green "✅ 镜像导入成功!"
-    else
-        red "❌ 镜像导入失败!"
-    fi
-    
-    echo ""
-    yellow "按回车键返回主菜单..."
-    read -n 1
-}
-
-# 功能4: 删除镜像
+# 功能3: 删除镜像
 function_remove_image() {
     clear
     green "=========================================="
@@ -348,19 +368,67 @@ function_remove_image() {
     read -n 1
 }
 
+# 功能4: 批量安装常用镜像
+function_batch_install() {
+    clear
+    green "=========================================="
+    green "           批量安装常用镜像"
+    green "=========================================="
+    echo ""
+    
+    local common_images=("debian11" "ubuntu20" "centos7" "almalinux8" "rockylinux8")
+    
+    green "将安装以下常用镜像:"
+    for image in "${common_images[@]}"; do
+        echo "  📦 $image"
+    done
+    echo ""
+    
+    reading "确认开始批量安装吗? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        yellow "取消批量安装"
+        sleep 2
+        return
+    fi
+    
+    check_cdn_file
+    echo ""
+    
+    local success_count=0
+    local total_count=${#common_images[@]}
+    
+    for image in "${common_images[@]}"; do
+        green "正在处理: $image"
+        if auto_download_install "$image" "$cdn_success_url"; then
+            green "✅ $image 安装成功"
+            ((success_count++))
+        else
+            red "❌ $image 安装失败"
+        fi
+        echo ""
+    done
+    
+    green "批量安装完成!"
+    green "成功: $success_count/$total_count"
+    
+    echo ""
+    yellow "按回车键返回主菜单..."
+    read -n 1
+}
+
 # 显示主菜单
 show_menu() {
     clear
     green "=========================================="
-    green "           Incus 镜像管理工具"
+    green "           Incus 镜像自动管理工具"
     green "=========================================="
     echo ""
     green "系统架构: $(detect_arch)"
     echo ""
     green "请选择操作:"
-    echo "1. 📋 列出可用镜像"
-    echo "2. 🔍 检查系统镜像可用性"
-    echo "3. 📥 导入自定义镜像"
+    echo "1. 🔍 搜索并自动安装镜像"
+    echo "2. 📦 批量安装常用镜像"
+    echo "3. 📋 列出可用镜像"
     echo "4. 🗑️  删除镜像"
     echo "5. ❌ 退出"
     echo ""
@@ -370,11 +438,11 @@ show_menu() {
 install_dependencies() {
     if ! command -v jq >/dev/null 2>&1; then
         yellow "安装 jq..."
-        apt-get install jq -y || yum install jq -y || dnf install jq -y
+        apt-get install jq -y >/dev/null 2>&1 || yum install jq -y >/dev/null 2>&1 || dnf install jq -y >/dev/null 2>&1
     fi
     if ! command -v unzip >/dev/null 2>&1; then
         yellow "安装 unzip..."
-        apt-get install unzip -y || yum install unzip -y || dnf install unzip -y
+        apt-get install unzip -y >/dev/null 2>&1 || yum install unzip -y >/dev/null 2>&1 || dnf install unzip -y >/dev/null 2>&1
     fi
 }
 
@@ -388,13 +456,13 @@ main() {
         
         case $choice in
             1)
-                function_list_images
+                function_auto_install
                 ;;
             2)
-                function_check_image
+                function_batch_install
                 ;;
             3)
-                function_import_image
+                function_list_images
                 ;;
             4)
                 function_remove_image
